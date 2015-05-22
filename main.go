@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"flag"
 	"io"
@@ -10,22 +11,23 @@ import (
 
 var (
 	argListen string
-	argUser string
-	argPass string
+	argUserPass string
+	basicAuthUserPass string
 )
 
 func main() {
 	flag.StringVar(&argListen, "listen", "", "Proxy listen, required.")
-	flag.StringVar(&argUser, "user", "", "Proxy username")
-	flag.StringVar(&argPass, "pass", "", "Proxy password")
+	flag.StringVar(&argUserPass, "userpass", "", "user:pass")
 	flag.Parse()
 
 	if argListen == "" {
 		log.Fatalln("-listen argument required.")
 	}
 
-	BasicAuthStr = "Basic " + base64.StdEncoding.EncodeToString(
-		[]byte(argUserPass))
+	if argUserPass != "" {
+		basicAuthUserPass = "Basic " + base64.StdEncoding.EncodeToString(
+			[]byte(argUserPass))
+	}
 
 	http.HandleFunc("/", handleProxy)
 	log.Fatalln(http.ListenAndServe(argListen, nil))
@@ -42,13 +44,15 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		r.URL.Opaque = "https"
 	}
 
-	if argUser != "" {
-		user,pass,ok := r.BasicAuth()
-		if !ok || user != argUser || pass != argPass {
+	if basicAuthUserPass != "" {
+		auth := r.Header.Get("Proxy-Authorization")
+		r.Header.Del("Proxy-Authorization")
+		if auth != basicAuthUserPass {
 			w.WriteHeader(http.StatusProxyAuthRequired)
 			fmt.Fprintln(w, "ProxyAuthRequired")
 			return
 		}
+		
 	}
 
 	resp,err := http.DefaultTransport.RoundTrip(r)
