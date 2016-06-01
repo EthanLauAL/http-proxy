@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 )
 
 var (
@@ -29,46 +30,75 @@ func main() {
 			[]byte(argUserPass))
 	}
 
-	http.HandleFunc("/", handleProxy)
-	log.Fatalln(http.ListenAndServe(argListen, nil))
+	log.Fatalln(http.ListenAndServe(argListen, new(server)))
 }
 
-func handleProxy(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Host == "" { //Request to this server.
-		http.NotFound(w,r)
-		return
-	}
+type server struct {}
 
-	if r.Method == "CONNECT" {
-		r.URL.Scheme = "http"
-		r.URL.Opaque = "https"
-	}
-
+func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if basicAuthUserPass != "" {
 		auth := r.Header.Get("Proxy-Authorization")
 		r.Header.Del("Proxy-Authorization")
 		if auth != basicAuthUserPass {
-			w.WriteHeader(http.StatusProxyAuthRequired)
-			fmt.Fprintln(w, "ProxyAuthRequired")
+			http.Error(w, "ProxyAuthRequired", http.StatusProxyAuthRequired)
 			return
 		}
-		
 	}
 
-	resp,err := http.DefaultTransport.RoundTrip(r)
+	if r.Method == "CONNECT" {
+		handleTunneling(w, r)
+	} else if r.URL.Host == "" {
+		http.NotFound(w,r)
+	} else {
+		handleHttpProxy(w, r)
+	}
+}
+
+func handleHttpProxy(w http.ResponseWriter, r *http.Request) {
+	resp,err := DefaultTransport.RoundTrip(r)
 	if err != nil {
 		log.Println(r.Method, r.URL, err)
 		w.WriteHeader(http.StatusBadGateway)
 		fmt.Fprintln(w, err.Error())
 	} else {
 		fmt.Println(r.Method, r.URL, resp.Status)
-		//Copy headers
-		for key,values := range resp.Header {
-			for _,value := range values {
-				w.Header().Add(key,value)
-			}
-		}
+		CopyHeader(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w,resp.Body)
 	}
+}
+
+func handleTunneling(w http.ResponseWriter, r *http.Request) {
+	var err error
+	defer func() {
+		if err != nil {
+			log.Println(r.Method, r.RequestURI, err)
+			http.Error(w, err.Error(), http.StatusBadGateway)
+		}
+	}()
+
+	oconn,err := DefaultTunnelingDial("tcp", r.RequestURI)
+	if oconn != nil { defer oconn.Close() }
+	if err != nil { return }
+
+	w.WriteHeader(http.StatusOK)
+	iconn, _, err := w.(http.Hijacker).Hijack()
+	if iconn != nil { defer iconn.Close() }
+	if err != nil { return }
+	iconn = &TimeoutConn{
+		Inner : iconn,
+		Timeout : 2 * time.Minute,
+	}
+
+	fmt.Println(r.Method, r.URL, "OK")
+	closing := make(chan bool, 2)
+	go func(){
+		io.Copy(iconn, oconn)
+		closing<-true
+	}()
+	go func(){
+		io.Copy(oconn, iconn)
+		closing<-true
+	}()
+	<-closing
 }
