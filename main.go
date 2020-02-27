@@ -17,7 +17,7 @@ var (
 )
 
 func main() {
-	flag.StringVar(&argListen, "listen", "", "Proxy listen, required.")
+	flag.StringVar(&argListen, "listen", ":1080", "Proxy listen, required.")
 	flag.StringVar(&argUserPass, "userpass", "", "user:pass")
 	flag.Parse()
 
@@ -57,11 +57,11 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func handleHttpProxy(w http.ResponseWriter, r *http.Request) {
 	resp,err := DefaultTransport.RoundTrip(r)
 	if err != nil {
-		log.Println(r.Method, r.URL, err)
+		log.Println(r.Method, r.Host, r.URL, err)
 		w.WriteHeader(http.StatusBadGateway)
 		fmt.Fprintln(w, err.Error())
 	} else {
-		fmt.Println(r.Method, r.URL, resp.Status)
+		fmt.Println(r.Method, r.Host, r.URL, resp.Status)
 		CopyHeader(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w,resp.Body)
@@ -72,7 +72,7 @@ func handleTunneling(w http.ResponseWriter, r *http.Request) {
 	var err error
 	defer func() {
 		if err != nil {
-			log.Println(r.Method, r.RequestURI, err)
+			log.Println(r.Method, r.Host, r.RequestURI, err)
 			http.Error(w, err.Error(), http.StatusBadGateway)
 		}
 	}()
